@@ -1,0 +1,5 @@
+__pycache__/
+.env
+agent_communication_log.txt
+final_answer.txt
+*.pyc
