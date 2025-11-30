@@ -1,29 +1,19 @@
 """
-Manufacturing Co Pilot, multi agent prototype using the OpenAI SDK
+Manufacturing Co Pilot with RAG helpers, single file version.
 
-This script implements the complete workflow from your Manufacturing Co Pilot diagram:
+This combines the full multi-agent workflow from `manufacturing_co_pilot.py`
+with simple RAG utilities and upload folders for PDF/TXT documents.
 
-1, CAD Feature Agent
-   Uses a vision transformer style model, via the OpenAI vision endpoint,
-   to convert a CAD diagram into a structured set of features and a high level task.
+Workflow overview (unchanged from the main script):
+1, CAD Feature Agent: vision model converts a CAD diagram into structured features.
+2, Semantic similarity and problem formulation: builds a feature list vs. library examples.
+3, Manufacturing Agent: synthesizes a candidate manufacturing process plan.
+4, Manufacturing Process Checker: statically checks the plan for issues.
+5, Interpreter Agent: produces a human-readable explanation of the validated plan.
 
-2, Semantic similarity and problem formulation
-   Builds a manufacturing feature list by comparing the current task with a library of
-   previous manufacturing examples using OpenAI embeddings.
-
-3, Manufacturing Agent
-   Uses a text model to synthesize a candidate manufacturing process plan
-   given CAD features and similar reference processes.
-
-4, Manufacturing Process Checker
-   Uses a model to statically check the plan for runtime problems and feasibility issues.
-
-5, Interpreter Agent
-   Produces a human readable explanation of the validated process plan.
-
-The implementation is intentionally modular so that you can later replace the
-in memory vector store with a proper database, or plug the agents into
-a tool such as LangGraph or Crew AI.
+RAG helpers:
+- Creates `rags/pdf` and `rags/txt` folders so users can drop documents.
+- Provides loaders to ingest those files into `Document` objects.
 """
 
 import os
@@ -32,22 +22,34 @@ import base64
 import mimetypes
 from datetime import datetime
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
+from dotenv import load_dotenv
 from openai import OpenAI
 
+# Optional PDF parser for ingestion; not required for the core workflow.
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+
 # The client expects the environment variable OPENAI_API_KEY to be set.
-from dotenv import load_dotenv
 load_dotenv()
-from openai import OpenAI
 client = OpenAI()
 
 COMMUNICATION_LOG_PATH = "agent_communication_log.txt"
 FINAL_ANSWER_PATH = "final_answer.txt"
 
+# RAG upload folders
+RAG_ROOT = Path(__file__).resolve().parent / "rags"
+PDF_DIR = RAG_ROOT / "pdf"
+TXT_DIR = RAG_ROOT / "txt"
+
+
 # --------------------------------------------------------------------
-# Data containers, vector store, and RAG retriever
+# Data containers, RAG helpers, vector store, and RAG retriever
 # --------------------------------------------------------------------
 
 
@@ -67,6 +69,80 @@ class Document:
 
     text: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+def ensure_rag_dirs() -> Tuple[Path, Path]:
+    """
+    Create the RAG upload folders if they do not exist.
+
+    Returns
+    -------
+    Tuple[Path, Path]
+        Paths to the PDF and TXT upload directories.
+    """
+    PDF_DIR.mkdir(parents=True, exist_ok=True)
+    TXT_DIR.mkdir(parents=True, exist_ok=True)
+    return PDF_DIR, TXT_DIR
+
+
+def _read_txt(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _read_pdf(path: Path) -> str:
+    if PdfReader is None:
+        raise RuntimeError(
+            "PDF ingestion requires the 'pypdf' package. Install with `pip install pypdf`."
+        )
+    reader = PdfReader(str(path))
+    pages = []
+    for page in reader.pages:
+        pages.append(page.extract_text() or "")
+    return "\n".join(pages)
+
+
+def load_rag_documents() -> List[Document]:
+    """
+    Load all TXT and PDF files from the RAG upload folders into Document objects.
+
+    Returns
+    -------
+    List[Document]
+        Documents with text content and simple metadata (filename and source type).
+
+    Raises
+    ------
+    RuntimeError
+        If PDF files are present but the pypdf dependency is missing.
+    """
+    ensure_rag_dirs()
+
+    docs: List[Document] = []
+
+    for txt_path in sorted(TXT_DIR.glob("*.txt")):
+        docs.append(
+            Document(
+                text=_read_txt(txt_path),
+                metadata={"filename": txt_path.name, "source_type": "txt"},
+            )
+        )
+
+    pdf_files = sorted(PDF_DIR.glob("*.pdf"))
+    if pdf_files and PdfReader is None:
+        raise RuntimeError(
+            "PDF files detected, but 'pypdf' is not installed. "
+            "Install it with `pip install pypdf` to ingest PDFs."
+        )
+
+    for pdf_path in pdf_files:
+        docs.append(
+            Document(
+                text=_read_pdf(pdf_path),
+                metadata={"filename": pdf_path.name, "source_type": "pdf"},
+            )
+        )
+
+    return docs
 
 
 class SimpleVectorStore:
@@ -544,7 +620,7 @@ def manufacturing_agent(
 You are the Manufacturing Agent in a manufacturing co pilot.
 
 Given CAD features and a manufacturing task description,
-synthesize an executable manufacturing plan.
+estimate an executable manufacturing plan.
 
 Requirements
 1, Propose a process chain as an ordered list of operations.
@@ -763,6 +839,13 @@ def run_manufacturing_copilot(
     ]
     vector_store.add_documents(kb_docs)
 
+    # Optional: ingest any uploaded RAG documents to enrich retrieval.
+    try:
+        rag_docs = load_rag_documents()
+        vector_store.add_documents(rag_docs)
+    except RuntimeError as rag_exc:
+        log_agent_message("RAG Loader", f"Skipped RAG docs: {rag_exc}")
+
     # Simple library of previously studied manufacturing tasks.
     process_library = [
         {
@@ -841,6 +924,9 @@ def run_manufacturing_copilot(
 
 
 if __name__ == "__main__":
+    # Ensure upload folders exist even if no ingestion happens.
+    ensure_rag_dirs()
+
     # In a real system this would be a URL pointing to a CAD rendering
     # stored in your object storage. For illustration we set a placeholder.
     example_cad_image_url = "/home/vnk3019/manufacturing_agent/cad_images/part_1.png"
@@ -851,7 +937,3 @@ if __name__ == "__main__":
         seed=42,
         temps="Maximum allowable bulk temperature around 120 C during any thermal process step.",
     )
-
-
-## Guess the process, should have AM parts, forging, welding sheet metal 
-## Focus on AM,and heat transfer models 
