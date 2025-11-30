@@ -3,8 +3,10 @@ Turns a CAD image into a vetted manufacturing plan using OpenAI vision + text mo
 
 ## Contents
 - `manufacturing_co_pilot_rag.py` — single-file pipeline with all agents, RAG helpers, and example entry point.
+- `multi_model_to_vector.py` — multimodal embedder for text/image/audio/video into an in-memory vector store.
 - `cad_images/` — place CAD renders (PNG/JPG). `__main__` uses `cad_images/part_1.png`.
 - `rags/txt`, `rags/pdf` — drop optional knowledge files for retrieval; created on startup.
+- `uploads/images|text|audio|video` — scratch folders to collect files you want to embed with `multi_model_to_vector.py`.
 - `agent_communication_log.txt` — chronological trace of each agent’s messages.
 - `final_answer.txt` — human-oriented explanation from the Interpreter Agent.
 
@@ -43,6 +45,14 @@ pip install openai python-dotenv numpy pypdf
 - Inputs: `run_manufacturing_copilot(cad_image_url, solver_hint=None, seed=None, temps=None)` — set solver hints, IDs/seeds, and allowable temperatures to guide retrieval and logging.
 - Image source: local paths are converted to data URLs; remote `http(s)` or `data:` URLs pass through.
 - Similarity depth: adjust `k` in `SimpleVectorStore.search` or top-N selection in `build_manufacturing_feature_list`.
+
+## Multimodal embedding helper (`multi_model_to_vector.py`)
+- Purpose: turn text, images (captioned via `gpt-5.1`), audio (transcribed via Whisper), and video (sampled + summarized via `gpt-5.1`) into embeddings using `text-embedding-3-large` for later RAG.
+- Inputs: point the script at any file paths; use the provided `uploads/images`, `uploads/text`, `uploads/audio`, `uploads/video` as convenient staging areas.
+- Run example:  
+  `python multi_model_to_vector.py uploads/images/part.png uploads/text/notes.txt uploads/video/demo.mp4 --query "aluminum bracket with slots"`
+- Requirements: `opencv-python` needed for video frame extraction; optional if you only use text/image/audio.
+- Behavior: stores documents and embeddings in memory during the run; prints an optional top-3 retrieval for the `--query` string.
 
 ## Programmatic use
 ```python
